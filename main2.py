@@ -1,4 +1,5 @@
 import sys
+import traceback
 from time import sleep
 import pandas as pd
 from selenium.webdriver import ActionChains
@@ -33,12 +34,12 @@ class Crawler:
         self.browser = webdriver.Edge(options=option)
         self.browser.maximize_window()
 
-        self.wait = WebDriverWait(self.browser, 3)
+        self.wait = WebDriverWait(self.browser, 5)
 
     def run(self):
         dcd_links = [8942, 4668, 1729, 5314, 4640, 3932, 4838, 4538, 3719, 4543, 2913, 2816, 1422, 798, 1647, 215, 148,
                      131]
-        self.work_dcd(dcd_links, city="北京")
+        # self.work_dcd(dcd_links, city="北京")
 
         qczz_links = ["https://www.autohome.com.cn/7223/#pvareaid=100124",
                       "https://www.autohome.com.cn/5382/#pvareaid=100124",
@@ -59,12 +60,15 @@ class Crawler:
                       "https://www.autohome.com.cn/2561/#pvareaid=100124",
                       "https://www.autohome.com.cn/3230/#pvareaid=100124"
                       ]
-        self.work_qczz(qczz_links)
+        self.work_qczj(qczz_links)
 
-    def work_qczz(self, links, city="北京"):
-        cars_data = []
+        self.browser.quit()
+
+    def work_qczj(self, links, city="北京"):
         first_run = True
+        cars_detail_data = []
         for link in tqdm(links):
+            cars_data = []
             self.browser.get(link)
             if first_run:
                 try:
@@ -87,23 +91,84 @@ class Crawler:
             for mode in different_mode:
                 all_car = mode.find_elements(By.XPATH, './dd')
                 for car in all_car:
-                    car_name = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a[1]').text
+                    car_name = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').text
+                    url = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').get_attribute("href")
                     zdj = car.find_element(By.XPATH, './div[@class="spec-guidance"]').text
-                    jxs = car.find_element(By.XPATH, './div[@class="spec-lowest"]').text
+                    jxs = car.find_element(By.XPATH, './div[@class="spec-lowest"]').text.replace("起", "")
                     if car_name != '':
-                        cars_data.append({"车型": name, "型号": car_name, "指导价": zdj, "经销商报价": jxs})
+                        cars_data.append(
+                            {"车系": name, "车型": car_name, "指导价": zdj, "经销商报价": jxs, "详情页面": url})
 
-        # 使用pandas保存或处理数据
-        df = pd.DataFrame(cars_data)
-        df.to_excel("cars_data_qczz.xlsx", index=False)
+            for item in cars_data:
+                self.browser.get(item["详情页面"])
+                level = self.browser.find_element(By.XPATH,
+                                                  '//div[@class="spec-param"]/div[@class="spec-content"]/div/div[1]/p').text
 
-        # 爬取完毕后，关闭浏览器
-        self.browser.quit()
+                try:
+                    self.wait.until(
+                        EC.element_to_be_clickable((By.XPATH, '//div[@class="dealer-shop-more"]/a')))
+                    more_info_url = self.browser.find_element(By.XPATH,
+                                                              '//div[@class="dealer-shop-more"]/a').get_attribute(
+                        'href')
+                    self.browser.get(more_info_url)
+
+                    self.wait.until(
+                        EC.element_to_be_clickable((By.XPATH, '//div[@class="wiki-pagination-btn"]/a')))
+                    pages = self.browser.find_elements(By.XPATH,
+                                                       '//div[@class="wiki-pagination-btn"]/a')
+
+                    self.browser.execute_script("arguments[0].scrollIntoView();", pages[0])
+                    first_name = None
+                    for page_cnt in range(len(pages)):
+                        if page_cnt != 0:
+                            self.browser.find_element(By.XPATH, "//div[@class='wiki-pagination-next']").click()
+                            sleep(0.5)
+                        all_cars = self.browser.find_elements(By.XPATH,
+                                                              '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                        # shop_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                        # if first_name is not None:
+                        #     while shop_name == first_name:
+                        #         all_cars = self.browser.find_elements(By.XPATH,
+                        #                                               '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                        #         shop_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                        # first_name = shop_name
+                        for car in all_cars:
+                            shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                            shop_price = car.find_element(By.XPATH,
+                                                          './div[@class="shop-price"]/span[@class="price"]/em').text
+                            shop_address = car.find_element(By.XPATH,
+                                                            './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
+                            cars_detail_data.append(
+                                {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
+                                 "汽车之家-经销商报价": item["经销商报价"], "汽车之家-厂商指导价": item["指导价"],
+                                 "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
+                                 "汽车之家-门店标签": level,
+                                 "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
+                except:
+                    all_cars = self.browser.find_elements(By.XPATH,
+                                                          '//div[@class="dealer-list"]/div[@class="dealer-shop"]')
+                    for car in all_cars:
+                        shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                        shop_price = car.find_element(By.XPATH,
+                                                      './div[@class="shop-price"]/span[@class="price"]/em').text
+                        shop_address = car.find_element(By.XPATH,
+                                                        './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
+                        cars_detail_data.append(
+                            {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
+                             "汽车之家-经销商报价": item["经销商报价"], "汽车之家-厂商指导价": item["指导价"],
+                             "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
+                             "汽车之家-门店标签": level,
+                             "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
+
+            # 使用pandas保存或处理数据
+            df = pd.DataFrame(cars_detail_data)
+            df.to_excel("cars_detail_qczj.xlsx", index=False)
 
     def work_dcd(self, links, city="北京"):
-        cars_data = []
+        cars_detail_data = []
         first_run = True
         for link in tqdm(links):
+            cars_data = []
             url = "https://www.dongchedi.com/auto/series/" + str(link) + "?city=" + city
             # url = "https://www.dongchedi.com/auto/series/8942?city=%E5%8C%97%E4%BA%AC"
 
@@ -143,17 +208,37 @@ class Crawler:
                 divs_with_data_log_click = mode.find_elements(By.XPATH, './div[@data-log-click]')
                 for car in divs_with_data_log_click:
                     child_divs = car.find_elements(By.XPATH, './div')
-                    car_name = child_divs[0].find_element(By.XPATH, './div/div[1]').text
+                    car_name = child_divs[0].find_element(By.XPATH, './div/div[1]/a').text
+                    detail_url = child_divs[0].find_element(By.XPATH, './div/div[1]/a').get_attribute("href")
                     zdj = child_divs[1].text  # 指导价
                     jxs = child_divs[2].text  # 经销商报价
                     if car_name != '':
-                        cars_data.append({"车型": name, "型号": car_name, "指导价": zdj, "经销商报价": jxs})
+                        cars_data.append(
+                            {"车系": name, "车型": car_name, "指导价": zdj, "经销商报价": jxs, "详情页面": detail_url})
 
-        df = pd.DataFrame(cars_data)
-        df.to_excel("cars_data_dcd.xlsx", index=False)
+            for item in cars_data:
+                self.browser.get(item["详情页面"])
+                geneal_info = self.browser.find_element(By.XPATH, '//div[@class="tw-col-span-2 tw-relative"]')
+                level = geneal_info.find_element(By.XPATH, './p/span[1]').text
 
-        # 爬取完毕后，关闭浏览器
-        self.browser.quit()
+                footer_bar = self.browser.find_elements(By.XPATH, '//ul[@class="jsx-1325911405 tw-flex"]/li')
+                for page in footer_bar[1:-1]:
+                    page.click()
+                    all_info = self.browser.find_element(By.XPATH, '//div[@id="newCar"]')
+                    cars = all_info.find_elements(By.XPATH, './section/ul/li')
+                    for car in cars:
+                        shop_name = car.find_element(By.XPATH, './div[1]/div[1]/div').text
+                        shop_price = car.find_element(By.XPATH, './div[1]/div[2]').text
+                        shop_address = car.find_element(By.XPATH, './div[3]/div[2]/div[1]/span/div').text
+                        cars_detail_data.append(
+                            {"圈定车系名称": item["车系"], "圈定城市": city, "车型懂车帝名称": item["车型"],
+                             "懂车帝-经销商报价": item["经销商报价"], "懂车帝-厂商指导价": item["指导价"],
+                             "懂车帝-门店名称": shop_name, "懂车帝-门店报价": shop_price,
+                             "懂车帝-地址信息": shop_address,
+                             "懂车帝-门店标签": level, "详情页面": item["详情页面"]})
+
+            df = pd.DataFrame(cars_detail_data)
+            df.to_excel("cars_detail_dcd.xlsx", index=False)
 
 
 if __name__ == '__main__':
