@@ -14,6 +14,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from pypinyin import pinyin, Style
 
+from utils import replace_phev, process_car_model_names
+
 
 def get_initials(text):
     initials = ''.join([word[0][0] for word in pinyin(text, style=Style.NORMAL)])
@@ -41,25 +43,7 @@ class Crawler:
                      131]
         # self.work_dcd(dcd_links, city="北京")
 
-        qczz_links = ["https://www.autohome.com.cn/7223/#pvareaid=100124",
-                      "https://www.autohome.com.cn/5382/#pvareaid=100124",
-                      "https://www.autohome.com.cn/6149/#pvareaid=100124",
-                      "https://www.autohome.com.cn/6362/#pvareaid=100124",
-                      "https://www.autohome.com.cn/5828/#pvareaid=100124",
-                      "https://www.autohome.com.cn/6150/#pvareaid=100124",
-                      "https://www.autohome.com.cn/6544/#pvareaid=100124",
-                      "https://www.autohome.com.cn/5758/#pvareaid=100124",
-                      "https://www.autohome.com.cn/5232/#pvareaid=100124",
-                      "https://www.autohome.com.cn/5765/#pvareaid=100124",
-                      "https://www.autohome.com.cn/4764/#pvareaid=100124",
-                      "https://www.autohome.com.cn/4663/#pvareaid=100124",
-                      "https://www.autohome.com.cn/3553/#pvareaid=100124",
-                      "https://www.autohome.com.cn/4083/#pvareaid=100124",
-                      "https://www.autohome.com.cn/3972/#pvareaid=100124",
-                      "https://www.autohome.com.cn/3248/#pvareaid=100124",
-                      "https://www.autohome.com.cn/2561/#pvareaid=100124",
-                      "https://www.autohome.com.cn/3230/#pvareaid=100124"
-                      ]
+        qczz_links = []
         self.work_qczj(qczz_links)
 
         self.browser.quit()
@@ -240,7 +224,89 @@ class Crawler:
             df = pd.DataFrame(cars_detail_data)
             df.to_excel("cars_detail_dcd.xlsx", index=False)
 
+    def process_min_msrp_data(self, data, model_name_column, msrp_column, store_name_column, jxs_column):
+        # Group by car model and find the minimum MSRP for each
+        min_msrp_per_model = data.groupby(['车系_车型名称', '圈定城市'])[msrp_column].min().reset_index()
+
+        # Merge to get only the rows with the minimum MSRP
+        min_msrp_data = pd.merge(data, min_msrp_per_model, on=['车系_车型名称', '圈定城市', msrp_column])
+
+        # Group by car model and city again and aggregate store names into a list
+        result = min_msrp_data.groupby(['车系_车型名称', '圈定城市']).agg({
+            model_name_column: 'first',  # Keep the model name
+            msrp_column: 'first',  # Keep the minimum MSRP
+            store_name_column: lambda x: list(x),  # Aggregate store names into a list
+            jxs_column: 'first'
+        }).reset_index()
+
+        return result
+
+    def concat(self):
+        dcd_df = pd.read_excel("cars_detail_dcd.xlsx")
+        qczj_df = pd.read_excel("cars_detail_qczj.xlsx")
+
+        dcd_df['圈定车系名称'] = dcd_df['圈定车系名称'].str.replace("PHEV", "新能源")
+        qczj_df['圈定车系名称'] = qczj_df['圈定车系名称'].str.replace("PHEV", "新能源")
+
+        dcd_df['处理后车型名称'] = dcd_df['车型懂车帝名称'].apply(process_car_model_names)
+        qczj_df['处理后车型名称'] = qczj_df['车型之家名称'].apply(process_car_model_names)
+
+        dcd_df['车系_车型名称'] = (dcd_df['圈定车系名称'] + '|' + dcd_df['处理后车型名称'])
+        qczj_df['车系_车型名称'] = (qczj_df['圈定车系名称'] + '|' + qczj_df['处理后车型名称'])
+
+        # Convert MSRP columns to float for both datasets
+        dcd_df['懂车帝-厂商指导价'] = dcd_df['懂车帝-厂商指导价'].str.replace('万', '').astype(float)
+        qczj_df['汽车之家-厂商指导价'] = qczj_df['汽车之家-厂商指导价'].str.replace('万', '').astype(float)
+
+        dcd_msrp_result = self.process_min_msrp_data(dcd_df, '车型懂车帝名称', '懂车帝-门店报价', '懂车帝-门店名称',
+                                                     '懂车帝-经销商报价')
+        qczj_msrp_result = self.process_min_msrp_data(qczj_df, '车型之家名称', '汽车之家-门店报价', '汽车之家-门店名称',
+                                                      '汽车之家-经销商报价')
+        dcd_msrp_result.to_excel("dcd_msrp_result.xlsx", index=False)
+        qczj_msrp_result.to_excel("qczj_msrp_result.xlsx", index=False)
+
+        merged_msrp_result = pd.merge(
+            dcd_msrp_result,
+            qczj_msrp_result,
+            on=['车系_车型名称', '圈定城市'],
+            suffixes=('_懂车帝', '_汽车之家'),
+            how='outer'
+        )
+
+        merged_msrp_result['车系名'] = merged_msrp_result['车系_车型名称'].str.split('|').str[0]
+        merged_msrp_result['车型名'] = merged_msrp_result['车系_车型名称'].str.split('|').str[1]
+        merged_msrp_result.drop(['车系_车型名称'], axis=1, inplace=True)
+        cols_to_move = ['车系名', '车型名']
+        merged_msrp_result = merged_msrp_result[cols_to_move + [col for col in merged_msrp_result.columns if col not in cols_to_move]]
+
+        merged_msrp_result.to_excel("merged_msrp_result.xlsx", index=False)
+
+        # Merge the results into a single DataFrame by car model
+        merged_result = pd.merge(dcd_msrp_result, qczj_msrp_result, on='圈定车系名称', suffixes=('_懂车帝', '_汽车之家'))
+
+        # Adding unique identifiers to facilitate the merge
+        # dcd_df['数据来源'] = 'DCD'
+        # qczj_df['数据来源'] = 'QCZJ'
+
+        # Perform the detailed match including dealer names
+        # Create a combined key for matching
+        dcd_df['匹配键'] = (dcd_df['圈定车系名称'] + '|'
+                            + dcd_df['处理后车型名称'] + '|'
+                            # + dcd_df['懂车帝-厂商指导价'].astype(str)+ '|'
+                            + dcd_df['懂车帝-经销商'])
+        qczj_df['匹配键'] = (qczj_df['圈定车系名称'] + '|'
+                             + qczj_df['处理后车型名称']
+                             + '|'
+                             # + qczj_df['汽车之家-厂商指导价'].astype(str) + '|'
+                             + qczj_df['汽车之家-门店名称'])
+
+        # Merging the dataframes on the combined key
+        combined_df = pd.merge(dcd_df, qczj_df, on='匹配键', how='outer', suffixes=('_DCD', '_QCZJ'))
+
+        # Optional: Export the matched results to a new Excel file
+        combined_df.to_excel('combined_results.xlsx', index=False)
+
 
 if __name__ == '__main__':
     r = Crawler()
-    r.run()
+    r.concat()
