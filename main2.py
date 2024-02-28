@@ -1,3 +1,4 @@
+import pickle
 import sys
 import traceback
 from time import sleep
@@ -24,129 +25,174 @@ def get_initials(text):
 
 class Crawler:
     def __init__(self):
-        option = webdriver.EdgeOptions()
+        self.option = webdriver.ChromeOptions()
         # option.add_argument("headless")  # 注释可以显示浏览器
-        option.add_argument('no-sandbox')
-        option.add_argument(
+        self.option.add_argument("--disable-extensions")
+        # option.add_argument("--headless")
+        self.option.add_argument("--disable-gpu")
+        self.option.add_argument("--disable-software-rasterizer")
+        self.option.add_argument('--ignore-certificate-errors')
+        self.option.add_argument('--allow-running-insecure-content')
+        self.option.add_argument("blink-settings=imagesEnabled=false")
+        self.option.add_argument('no-sandbox')
+        self.option.add_argument(
             "user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 "
             "Safari/537.36'")
 
         # driver_path = ChromeDriverManager().install()
         # service = Service(driver_path)
-        self.browser = webdriver.Edge(options=option)
+        self.browser = webdriver.Chrome(options=self.option)
         self.browser.maximize_window()
 
         self.wait = WebDriverWait(self.browser, 5)
+        self.wait_1 = WebDriverWait(self.browser, 1)
 
     def run(self):
         dcd_links = [8942, 4668, 1729, 5314, 4640, 3932, 4838, 4538, 3719, 4543, 2913, 2816, 1422, 798, 1647, 215, 148,
                      131]
         # self.work_dcd(dcd_links, city="北京")
 
-        qczz_links = []
-        self.work_qczj(qczz_links)
-
+        qczj_df = pd.read_excel("data/raw_data.xlsx")
+        qczj_links = qczj_df['汽车之家车系页链接'].dropna().tolist()
+        cities = qczj_df['城市'].dropna().tolist()
+        self.work_qczj(qczj_links, cities)
         self.browser.quit()
 
-    def work_qczj(self, links, city="北京"):
+    def get_new_browser(self):
+        self.browser.quit()
+        self.browser = webdriver.Chrome(options=self.option)
+        self.browser.maximize_window()
+        self.wait = WebDriverWait(self.browser, 5)
+        self.wait_1 = WebDriverWait(self.browser, 1)
+
+    def work_qczj(self, links, cities=None):
+        if cities is None:
+            cities = ["北京"]
         first_run = True
-        cars_detail_data = []
-        for link in tqdm(links):
-            cars_data = []
-            self.browser.get(link)
-            if first_run:
+        for city in tqdm(cities[1:]):
+            self.get_new_browser()
+            change_city = True
+            cars_detail_data = []
+            error_data = []
+            error_link = []
+            for link in tqdm(links):
+                cars_data = []
                 try:
-                    self.wait.until(
-                        EC.element_to_be_clickable((By.XPATH, '//span[@class="inquiry_layer_close"]'))).click()
+                    self.browser.get(link)
+                    if first_run:
+                        try:
+                            self.wait.until(
+                                EC.element_to_be_clickable((By.XPATH, '//span[@class="inquiry_layer_close"]'))).click()
+                        except:
+                            pass
+                        first_run = False
+                    if change_city:
+                        self.browser.find_element(By.XPATH, '//p[@class="promotion-citychange"]/a').click()
+                        send_area = self.wait.until(
+                            EC.element_to_be_clickable((By.XPATH, '//input[@id="auto-citypicker-txt"]')))
+                        send_area.send_keys(f"{city}")
+                        self.browser.find_element(By.XPATH, '//ul[@id="auto-citypicker-tip-list"]/li/a').click()
+                        self.browser.refresh()
+                        change_city = False
+
+                    all_info = self.browser.find_element(By.XPATH, '//div[@class="series-list"]')
+                    name = all_info.find_element(By.XPATH, './div[@class="athm-title"]/div[1]').text
+                    different_mode = all_info.find_elements(By.XPATH,
+                                                            './div[@class="series-content"]/div[@id="specWrap-2"]/dl')
+                    for mode in different_mode:
+                        all_car = mode.find_elements(By.XPATH, './dd')
+                        for car in all_car:
+                            car_name = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').text
+                            url = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').get_attribute(
+                                "href")
+                            zdj = car.find_element(By.XPATH, './div[@class="spec-guidance"]').text
+                            jxs = car.find_element(By.XPATH, './div[@class="spec-lowest"]').text.replace("起", "")
+                            if car_name != '':
+                                cars_data.append(
+                                    {"车系": name, "车型": car_name, "指导价": zdj, "经销商报价": jxs, "详情页面": url})
                 except:
-                    pass
-                first_run = False
-            self.browser.find_element(By.XPATH, '//p[@class="promotion-citychange"]/a').click()
-            send_area = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, '//input[@id="auto-citypicker-txt"]')))
+                    # 打印详细信息
+                    print("Unexpected error:", traceback.format_exc())
+                    error_link.append(link)
+                    continue
 
-            send_area.send_keys(f"{city}")
-            self.browser.find_element(By.XPATH, '//ul[@id="auto-citypicker-tip-list"]/li/a').click()
-            self.browser.refresh()
+                for item in cars_data:
+                    try:
+                        self.browser.get(item["详情页面"])
+                        level = self.browser.find_element(By.XPATH,
+                                                          '//div[@class="spec-param"]/div[@class="spec-content"]/div/div[1]/p').text
+                    except:
+                        print("Unexpected error:", traceback.format_exc())
+                        error_data.append(item)
+                        continue
 
-            all_info = self.browser.find_element(By.XPATH, '//div[@class="series-list"]')
-            name = all_info.find_element(By.XPATH, './div[@class="athm-title"]/div[1]').text
-            different_mode = all_info.find_elements(By.XPATH, './div[@class="series-content"]/div[@id="specWrap-2"]/dl')
-            for mode in different_mode:
-                all_car = mode.find_elements(By.XPATH, './dd')
-                for car in all_car:
-                    car_name = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').text
-                    url = car.find_element(By.XPATH, './div[@class="spec-name"]/div/p[1]/a').get_attribute("href")
-                    zdj = car.find_element(By.XPATH, './div[@class="spec-guidance"]').text
-                    jxs = car.find_element(By.XPATH, './div[@class="spec-lowest"]').text.replace("起", "")
-                    if car_name != '':
-                        cars_data.append(
-                            {"车系": name, "车型": car_name, "指导价": zdj, "经销商报价": jxs, "详情页面": url})
+                    try:
+                        self.wait_1.until(
+                            EC.element_to_be_clickable((By.XPATH, '//div[@class="dealer-shop-more"]/a')))
+                        try:
+                            more_info_url = self.browser.find_element(By.XPATH,
+                                                                      '//div[@class="dealer-shop-more"]/a').get_attribute(
+                                'href')
+                            self.browser.get(more_info_url)
+                            self.wait.until(
+                                EC.element_to_be_clickable((By.XPATH, '//div[@class="wiki-pagination-btn"]/a')))
+                            pages = self.browser.find_elements(By.XPATH,
+                                                               '//div[@class="wiki-pagination-btn"]/a')
 
-            for item in cars_data:
-                self.browser.get(item["详情页面"])
-                level = self.browser.find_element(By.XPATH,
-                                                  '//div[@class="spec-param"]/div[@class="spec-content"]/div/div[1]/p').text
+                            self.browser.execute_script("arguments[0].scrollIntoView();", pages[0])
+                            for page_cnt in range(len(pages)):
+                                if page_cnt != 0:
+                                    self.browser.find_element(By.XPATH, "//div[@class='wiki-pagination-next']").click()
+                                    sleep(0.3)
+                                all_cars = self.browser.find_elements(By.XPATH,
+                                                                      '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                                for car in all_cars:
+                                    shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                                    shop_price = car.find_element(By.XPATH,
+                                                                  './div[@class="shop-price"]/span[@class="price"]/em').text
+                                    shop_address = car.find_element(By.XPATH,
+                                                                    './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
+                                    cars_detail_data.append(
+                                        {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
+                                         "汽车之家-经销商报价": item["经销商报价"],
+                                         "汽车之家-厂商指导价": item["指导价"],
+                                         "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
+                                         "汽车之家-门店标签": level,
+                                         "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
 
-                try:
-                    self.wait.until(
-                        EC.element_to_be_clickable((By.XPATH, '//div[@class="dealer-shop-more"]/a')))
-                    more_info_url = self.browser.find_element(By.XPATH,
-                                                              '//div[@class="dealer-shop-more"]/a').get_attribute(
-                        'href')
-                    self.browser.get(more_info_url)
+                        except:
+                            print("Unexpected error:", traceback.format_exc())
+                            error_data.append(item)
+                            continue
 
-                    self.wait.until(
-                        EC.element_to_be_clickable((By.XPATH, '//div[@class="wiki-pagination-btn"]/a')))
-                    pages = self.browser.find_elements(By.XPATH,
-                                                       '//div[@class="wiki-pagination-btn"]/a')
-
-                    self.browser.execute_script("arguments[0].scrollIntoView();", pages[0])
-                    first_name = None
-                    for page_cnt in range(len(pages)):
-                        if page_cnt != 0:
-                            self.browser.find_element(By.XPATH, "//div[@class='wiki-pagination-next']").click()
-                            sleep(0.5)
-                        all_cars = self.browser.find_elements(By.XPATH,
-                                                              '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
-                        # shop_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
-                        # if first_name is not None:
-                        #     while shop_name == first_name:
-                        #         all_cars = self.browser.find_elements(By.XPATH,
-                        #                                               '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
-                        #         shop_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
-                        # first_name = shop_name
-                        for car in all_cars:
-                            shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
-                            shop_price = car.find_element(By.XPATH,
-                                                          './div[@class="shop-price"]/span[@class="price"]/em').text
-                            shop_address = car.find_element(By.XPATH,
-                                                            './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
-                            cars_detail_data.append(
-                                {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
-                                 "汽车之家-经销商报价": item["经销商报价"], "汽车之家-厂商指导价": item["指导价"],
-                                 "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
-                                 "汽车之家-门店标签": level,
-                                 "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
-                except:
-                    all_cars = self.browser.find_elements(By.XPATH,
-                                                          '//div[@class="dealer-list"]/div[@class="dealer-shop"]')
-                    for car in all_cars:
-                        shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
-                        shop_price = car.find_element(By.XPATH,
-                                                      './div[@class="shop-price"]/span[@class="price"]/em').text
-                        shop_address = car.find_element(By.XPATH,
-                                                        './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
-                        cars_detail_data.append(
-                            {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
-                             "汽车之家-经销商报价": item["经销商报价"], "汽车之家-厂商指导价": item["指导价"],
-                             "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
-                             "汽车之家-门店标签": level,
-                             "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
+                    except:
+                        try:
+                            all_cars = self.browser.find_elements(By.XPATH,
+                                                                  '//div[@class="dealer-list"]/div[@class="dealer-shop"]')
+                            for car in all_cars:
+                                shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                                shop_price = car.find_element(By.XPATH,
+                                                              './div[@class="shop-price"]/span[@class="price"]/em').text
+                                shop_address = car.find_element(By.XPATH,
+                                                                './div[@class="shop-detail"]/div[@class="shop-info"]/p[@class="shop-address"]/span').text
+                                cars_detail_data.append(
+                                    {"圈定车系名称": item["车系"], "圈定城市": city, "车型之家名称": item["车型"],
+                                     "汽车之家-经销商报价": item["经销商报价"], "汽车之家-厂商指导价": item["指导价"],
+                                     "汽车之家-门店名称": shop_name, "汽车之家-门店报价": shop_price,
+                                     "汽车之家-门店标签": level,
+                                     "汽车之家-地址信息": shop_address, "详情页面": item["详情页面"]})
+                        except:
+                            print("Unexpected error:", traceback.format_exc())
+                            error_data.append(item)
+                            continue
+            with open(f'log/error_{city}.pkl', 'wb') as f:
+                pickle.dump(error_data, f)
+            with open(f'log/error_link_{city}.pkl', 'wb') as f:
+                pickle.dump(error_link, f)
 
             # 使用pandas保存或处理数据
             df = pd.DataFrame(cars_detail_data)
-            df.to_excel("cars_detail_qczj.xlsx", index=False)
+            df.to_excel(f"result/cars_detail_qczj_{city}.xlsx", index=False)
 
     def work_dcd(self, links, city="北京"):
         cars_detail_data = []
@@ -222,7 +268,7 @@ class Crawler:
                              "懂车帝-门店标签": level, "详情页面": item["详情页面"]})
 
             df = pd.DataFrame(cars_detail_data)
-            df.to_excel("cars_detail_dcd.xlsx", index=False)
+            df.to_excel("result/cars_detail_dcd.xlsx", index=False)
 
     def process_min_msrp_data(self, data, model_name_column, msrp_column, store_name_column, jxs_column):
         # Group by car model and find the minimum MSRP for each
@@ -262,8 +308,6 @@ class Crawler:
                                                      '懂车帝-经销商报价')
         qczj_msrp_result = self.process_min_msrp_data(qczj_df, '车型之家名称', '汽车之家-门店报价', '汽车之家-门店名称',
                                                       '汽车之家-经销商报价')
-        dcd_msrp_result.to_excel("dcd_msrp_result.xlsx", index=False)
-        qczj_msrp_result.to_excel("qczj_msrp_result.xlsx", index=False)
 
         merged_msrp_result = pd.merge(
             dcd_msrp_result,
@@ -277,36 +321,17 @@ class Crawler:
         merged_msrp_result['车型名'] = merged_msrp_result['车系_车型名称'].str.split('|').str[1]
         merged_msrp_result.drop(['车系_车型名称'], axis=1, inplace=True)
         cols_to_move = ['车系名', '车型名']
-        merged_msrp_result = merged_msrp_result[cols_to_move + [col for col in merged_msrp_result.columns if col not in cols_to_move]]
-
-        merged_msrp_result.to_excel("merged_msrp_result.xlsx", index=False)
+        merged_msrp_result = merged_msrp_result[
+            cols_to_move + [col for col in merged_msrp_result.columns if col not in cols_to_move]]
 
         # Merge the results into a single DataFrame by car model
-        merged_result = pd.merge(dcd_msrp_result, qczj_msrp_result, on='圈定车系名称', suffixes=('_懂车帝', '_汽车之家'))
+        merged_result = pd.merge(dcd_msrp_result, qczj_msrp_result, on='圈定车系名称',
+                                 suffixes=('_懂车帝', '_汽车之家'))
 
-        # Adding unique identifiers to facilitate the merge
-        # dcd_df['数据来源'] = 'DCD'
-        # qczj_df['数据来源'] = 'QCZJ'
-
-        # Perform the detailed match including dealer names
-        # Create a combined key for matching
-        dcd_df['匹配键'] = (dcd_df['圈定车系名称'] + '|'
-                            + dcd_df['处理后车型名称'] + '|'
-                            # + dcd_df['懂车帝-厂商指导价'].astype(str)+ '|'
-                            + dcd_df['懂车帝-经销商'])
-        qczj_df['匹配键'] = (qczj_df['圈定车系名称'] + '|'
-                             + qczj_df['处理后车型名称']
-                             + '|'
-                             # + qczj_df['汽车之家-厂商指导价'].astype(str) + '|'
-                             + qczj_df['汽车之家-门店名称'])
-
-        # Merging the dataframes on the combined key
-        combined_df = pd.merge(dcd_df, qczj_df, on='匹配键', how='outer', suffixes=('_DCD', '_QCZJ'))
-
-        # Optional: Export the matched results to a new Excel file
-        combined_df.to_excel('combined_results.xlsx', index=False)
+        # Save the result to an Excel file
+        merged_result.to_excel("result/merged_result.xlsx", index=False)
 
 
 if __name__ == '__main__':
     r = Crawler()
-    r.concat()
+    r.run()
