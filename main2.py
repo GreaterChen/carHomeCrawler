@@ -28,7 +28,6 @@ class Crawler:
         self.option = webdriver.ChromeOptions()
         # option.add_argument("headless")  # 注释可以显示浏览器
         self.option.add_argument("--disable-extensions")
-        # option.add_argument("--headless")
         self.option.add_argument("--disable-gpu")
         self.option.add_argument("--disable-software-rasterizer")
         self.option.add_argument('--ignore-certificate-errors')
@@ -54,13 +53,13 @@ class Crawler:
 
         # dcd_links = [8942, 4668, 1729, 5314, 4640, 3932, 4838, 4538, 3719, 4543, 2913, 2816, 1422, 798, 1647, 215, 148,
         #              131]
-        self.work_dcd(dcd_links)
+        # self.work_dcd(dcd_links)
 
-        # qczj_df = pd.read_excel("data/raw_data.xlsx")
-        # qczj_links = qczj_df['汽车之家车系页链接'].dropna().tolist()
-        # cities = qczj_df['城市'].dropna().tolist()
-        # self.work_qczj(qczj_links, cities)
-        # self.browser.quit()
+        qczj_df = pd.read_excel("data/raw_data.xlsx")
+        qczj_links = qczj_df['汽车之家车系页链接'].dropna().tolist()
+        cities = qczj_df['城市'].dropna().tolist()
+        self.work_qczj(qczj_links, cities)
+        self.browser.quit()
 
     def get_new_browser(self):
         self.browser.quit()
@@ -97,12 +96,25 @@ class Crawler:
                                                        '//div[@class="wiki-pagination-btn"]/a')
 
                     self.browser.execute_script("arguments[0].scrollIntoView();", pages[0])
+                    last_name = None
                     for page_cnt in range(len(pages)):
                         if page_cnt != 0:
                             self.browser.find_element(By.XPATH, "//div[@class='wiki-pagination-next']").click()
-                            sleep(0.3)
+                            all_cars = self.browser.find_elements(By.XPATH,
+                                                                  '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                            cur_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                            while cur_name == last_name:
+                                try:
+                                    all_cars = self.browser.find_elements(By.XPATH,
+                                                                      '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                                    cur_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
+                                except:
+                                    all_cars = self.browser.find_elements(By.XPATH,
+                                                                          '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                                    cur_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
                         all_cars = self.browser.find_elements(By.XPATH,
                                                               '//div[@id="dealerList"]/div[@class="item active"]/div/div[@class="dealer-shop"]')
+                        last_name = all_cars[0].find_element(By.XPATH, './div[@class="shop-title"]/a').text
                         for car in all_cars:
                             shop_name = car.find_element(By.XPATH, './div[@class="shop-title"]/a').text
                             shop_price = car.find_element(By.XPATH,
@@ -148,13 +160,13 @@ class Crawler:
         if cities is None:
             cities = ["北京"]
         first_run = True
-        for city in tqdm(cities[1:]):
+        for city in tqdm(cities[:1]):
             self.get_new_browser()
             change_city = True
             cars_detail_data = []
             error_data = []
             error_link = []
-            for link in tqdm(links):
+            for link in tqdm(links[48:]):
                 cars_data = []
                 try:
                     self.browser.get(link)
@@ -196,7 +208,7 @@ class Crawler:
                     continue
 
                 cars_detail_data_sub, error_data_sub = self.work_qczj_detail(cars_data, city)
-                cars_detail_data.extend(cars_detail_data)
+                cars_detail_data.extend(cars_detail_data_sub)
                 error_data.extend(error_data_sub)
 
             with open(f'log/error_{city}{prefix}.pkl', 'wb') as f:
@@ -345,8 +357,10 @@ class Crawler:
     def rerun_qczj(self):
         with open('log/error_link_北京.pkl', 'rb') as f:
             error_links = pickle.load(f)
-        self.work_qczj(error_links, ["北京"], prefix="_rerun")
+        # self.work_qczj(error_links, ["北京"], prefix="_rerun")
 
+
+        print("Rerun 1 done")
         with open('log/error_北京.pkl', 'rb') as f:
             cars_data = pickle.load(f)
         cars_detail_data, error_data = self.work_qczj_detail(cars_data, "北京")
@@ -358,9 +372,9 @@ class Crawler:
         df.to_excel(f"result/cars_detail_qczj_北京_rerun_2.xlsx", index=False)
 
     def rerun_dcd(self):
-        # with open('log/dcd/error_link_北京.pkl', 'rb') as f:
-        #     error_links = pickle.load(f)
-        # self.work_dcd(error_links, ["北京"], prefix="_rerun")
+        with open('log/dcd/error_link_北京.pkl', 'rb') as f:
+            error_links = pickle.load(f)
+        self.work_dcd(error_links, ["北京"], prefix="_rerun")
 
         with open('log/dcd/error_北京.pkl', 'rb') as f:
             cars_data = pickle.load(f)
@@ -387,7 +401,6 @@ class Crawler:
         if len(error_data_2):
             error_data_2.set_index(['圈定车系名称', '车型懂车帝名称', '懂车帝-门店名称'], inplace=True)
             origin_data.update(error_data_2)
-
 
         final_df = pd.concat([origin_data, error_data, error_data_2], axis=0).drop_duplicates(keep='last').reset_index()
         final_df.to_excel("result/dcd/final.xlsx", index=False)
@@ -448,14 +461,9 @@ class Crawler:
 
         merged_msrp_result.to_excel("result/merged_result.xlsx", index=False)
 
-        # # Merge the results into a single DataFrame by car model
-        # merged_result = pd.merge(dcd_msrp_result, qczj_msrp_result, on='圈定车系名称',
-        #                          suffixes=('_懂车帝', '_汽车之家'))
-        #
-        # # Save the result to an Excel file
-        # merged_result.to_excel("result/merged_result.xlsx", index=False)
-
 
 if __name__ == '__main__':
     r = Crawler()
-    r.concat("result/dcd/final.xlsx", "result/cars_detail_qczj_北京.xlsx")
+    # r.run()
+    # r.rerun_qczj()
+    r.concat("result/dcd/cars_detail_dcd_北京.xlsx", "result/cars_detail_qczj_北京_3.xlsx")
